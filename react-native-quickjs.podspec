@@ -11,11 +11,7 @@ Pod::Spec.new do |s|
   s.authors      = package["author"]
 
   s.platforms    = { :ios => "9.0" }
-  s.source       = { :git => "https://github.com/onesmash/react-native-quickjs.git", :tag => "#{s.version}" }
-
+  s.source       = { :http => "https://github.com/onesmash/react-native-quickjs.git" }
+  s.source_files = "ios/quickjs-2020-07-05/**/*.{h,c}"
   
-  s.source_files = "ios/**/*.{h,m,mm}"
-  
-
-  s.dependency "React"
 end
