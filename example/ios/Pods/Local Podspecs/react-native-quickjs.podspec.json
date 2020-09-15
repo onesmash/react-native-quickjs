@@ -1,0 +1,32 @@
+{
+  "name": "react-native-quickjs",
+  "version": "0.1.0",
+  "summary": "react-native-quickjs",
+  "homepage": "https://github.com/onesmash/react-native-quickjs#readme",
+  "license": "MIT",
+  "authors": "xuhui <good122000@qq.com> (https://github.com/onesmash)",
+  "platforms": {
+    "ios": "9.0"
+  },
+  "source": {
+    "http": "https://github.com/onesmash/react-native-quickjs.git"
+  },
+  "source_files": "ios/**/*.{h,c,cpp}",
+  "exclude_files": [
+    "ios/quickjs/qjsc.c",
+    "ios/quickjs/qjs.c",
+    "ios/quickjs/run-test262.c",
+    "ios/quickjs-2020-07-05/unicode_gen.c",
+    "ios/quickjs/doc/**/*",
+    "ios/quickjs/examples/**/*",
+    "ios/quickjs/tests/**/*"
+  ],
+  "dependencies": {
+    "React-jsi": [
+
+    ]
+  },
+  "xcconfig": {
+    "OTHER_CFLAGS": "    $(inherited) -DCONFIG_VERSION=\"\\\"2020-07-05\\\"\"\n"
+  }
+}

@@ -118,13 +118,13 @@ public:
     
     bool instanceOf(const facebook::jsi::Object &o, const facebook::jsi::Function &f) override;
     
-    jsi::Value createValue(JSValueRef value) const;
+    jsi::Value createValue(JSValue value) const;
     
 private:
-    void checkException(JSValueRef exc);
-    void checkException(JSValueRef res, JSValueRef exc);
-    void checkException(JSValueRef exc, const char* msg);
-    void checkException(JSValueRef res, JSValueRef exc, const char* msg);
+//    void checkException(JSValueRef exc);
+//    void checkException(JSValueRef res, JSValueRef exc);
+//    void checkException(JSValueRef exc, const char* msg);
+//    void checkException(JSValueRef res, JSValueRef exc, const char* msg);
     
     JSContext *ctx_;
     std::atomic<bool> ctxInvalid_;
@@ -174,18 +174,18 @@ jsi::Value QJSRuntime::createValue(JSValue value) const {
   } else if (JS_IsNull(value)) {
       return jsi::Value(nullptr);
   } else if (JS_IsUndefined(value)) {
-    return jsi::Value();
+      return jsi::Value();
   } else if (JS_IsString(value)) {
-      JS_ToString(<#JSContext *ctx#>, <#JSValue val#>)
-    JSStringRef str = JSValueToStringCopy(ctx_, value, nullptr);
-    auto result = jsi::Value(createString(str));
-    JSStringRelease(str);
-    return result;
+      size_t size;
+      const char* value = JS_ToCStringLen2(ctx_, &size, value, 0);
+//      auto result = jsi::Value(jsi::String::createFromAscii(ctx_, value, size));
+      JS_FreeCString(ctx_, value);
+      return result;
   } else if (JSValueIsObject(ctx_, value)) {
-    JSObjectRef objRef = JSValueToObject(ctx_, value, nullptr);
-    return jsi::Value(createObject(objRef));
+    //JSObjectRef objRef = JSValueToObject(ctx_, value, nullptr);
+    //return jsi::Value(createObject(objRef));
   } else if (smellsLikeES6Symbol(ctx_, value)) {
-    return jsi::Value(createSymbol(value));
+    //return jsi::Value(createSymbol(value));
   } else {
     // WHAT ARE YOU
     abort();
@@ -201,14 +201,14 @@ jsi::Value QJSRuntime::evaluateJavaScript(
     int ret;
 
     val = JS_Eval(ctx_, tmp.c_str(), tmp.size(), sourceURL.c_str(), 0);
-    if (JS_IsException(val)) {
-        js_std_dump_error(ctx_);
-        ret = -1;
-    } else {
-        ret = 0;
-    }
+//    if (JS_IsException(val)) {
+//        js_std_dump_error(ctx_);
+//        ret = -1;
+//    } else {
+//        ret = 0;
+//    }
     JS_FreeValue(ctx_, val);
-    return createValue()
+    return createValue();
     
 //  JSStringRef sourceRef = JSStringCreateWithUTF8CString(tmp.c_str());
 //  JSStringRef sourceURLRef = nullptr;
