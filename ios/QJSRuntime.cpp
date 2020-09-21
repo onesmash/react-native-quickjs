@@ -6,10 +6,14 @@
 //
 
 #include "QJSRuntime.h"
-#include "quickjs.h"
+#include <jsi/jsilib.h>
+#include <quickjs-libc.h>
+using namespace facebook;
 using namespace jsi;
 
 namespace qjs {
+
+typedef struct JSValue *JSValueRef;
 
 class QJSRuntime : public jsi::Runtime {
 public:
@@ -120,11 +124,84 @@ public:
     
     jsi::Value createValue(JSValue value) const;
     
+protected:
+    class QJSSymbolValue final : public PointerValue {
+    #ifndef NDEBUG
+        QJSSymbolValue(JSContext *ctx_,
+                       const std::atomic<bool>& ctxInvalid,
+                       JSValueRef sym, std::atomic<intptr_t>& counter);
+    #else
+        QJSSymbolValue(JSContext *ctx_,
+                       const std::atomic<bool>& ctxInvalid,
+                       JSValueRef sym);
+    #endif
+        void invalidate() override;
+
+        JSContext *ctx_;
+        const std::atomic<bool>& ctxInvalid_;
+        // There is no C type in the JSC API to represent Symbol, so this stored
+        // a JSValueRef which contains the Symbol.
+        JSValue sym_;
+    #ifndef NDEBUG
+        std::atomic<intptr_t>& counter_;
+    #endif
+       protected:
+        friend class QJSRuntime;
+      };
+    
+    class QJSStringValue final : public PointerValue {
+    #ifndef NDEBUG
+        QJSStringValue(JSContext *ctx_, const std::atomic<bool>& ctxInvalid, JSValueRef str, std::atomic<intptr_t>& counter);
+    #else
+        QJSStringValue(JSContext *ctx_, const std::atomic<bool>& ctxInvalid, JSValueRef str);
+    #endif
+        void invalidate() override;
+
+        const std::atomic<bool>& ctxInvalid_;
+        JSContext *ctx_;
+        JSValue str_;
+    #ifndef NDEBUG
+        std::atomic<intptr_t>& counter_;
+    #endif
+       protected:
+        friend class QJSRuntime;
+      };
+    
+    class QJSObjectValue final : public PointerValue {
+        QJSObjectValue(
+            JSContext *ctx_,
+            const std::atomic<bool>& ctxInvalid,
+            JSValueRef obj
+    #ifndef NDEBUG
+            ,
+            std::atomic<intptr_t>& counter
+    #endif
+                       );
+
+        void invalidate() override;
+
+        const std::atomic<bool>& ctxInvalid_;
+        JSContext *ctx_;
+        JSValue obj_;
+    #ifndef NDEBUG
+        std::atomic<intptr_t>& counter_;
+    #endif
+       protected:
+        friend class QJSRuntime;
+      };
+    
 private:
-//    void checkException(JSValueRef exc);
-//    void checkException(JSValueRef res, JSValueRef exc);
-//    void checkException(JSValueRef exc, const char* msg);
-//    void checkException(JSValueRef res, JSValueRef exc, const char* msg);
+    void checkException(JSValueRef exc);
+    void checkException(JSValueRef res, JSValueRef exc);
+    void checkException(JSValueRef exc, const char* msg);
+    void checkException(JSValueRef res, JSValueRef exc, const char* msg);
+    jsi::Symbol createSymbol(JSValueRef symbol) const;
+    jsi::String createString(JSValueRef str) const;
+    jsi::Object createObject(JSValueRef object) const;
+    
+    jsi::Runtime::PointerValue* makeSymbolValue(JSValueRef sym) const;
+    jsi::Runtime::PointerValue* makeStringValue(JSValueRef str) const;
+    jsi::Runtime::PointerValue* makeObjectValue(JSValueRef obj) const;
     
     JSContext *ctx_;
     std::atomic<bool> ctxInvalid_;
@@ -163,6 +240,46 @@ QJSRuntime::~QJSRuntime() {
 #endif
 }
 
+jsi::Runtime::PointerValue* QJSRuntime::makeSymbolValue(
+    JSValueRef symbol) const {
+#ifndef NDEBUG
+  return new QJSSymbolValue(ctx_, ctxInvalid_, symbol, symbolCounter_);
+#else
+  return new QJSSymbolValue(ctx_, ctxInvalid_, symbol);
+#endif
+}
+
+jsi::Runtime::PointerValue* QJSRuntime::makeStringValue(
+    JSValueRef str) const {
+#ifndef NDEBUG
+  return new QJSStringValue(ctx_, ctxInvalid_, str, stringCounter_);
+#else
+  return new QJSStringValue(ctx_, ctxInvalid_, str);
+#endif
+}
+
+jsi::Runtime::PointerValue* QJSRuntime::makeObjectValue(
+    JSValueRef object) const {
+#ifndef NDEBUG
+  return new QJSObjectValue(ctx_, ctxInvalid_, object, objectCounter_);
+#else
+  return new QJSObjectValue(ctx_, ctxInvalid_, object);
+#endif
+}
+
+
+jsi::Symbol QJSRuntime::createSymbol(JSValueRef sym) const {
+  return make<jsi::Symbol>(makeSymbolValue(sym));
+}
+
+jsi::String QJSRuntime::createString(JSValueRef str) const {
+  return make<jsi::String>(makeStringValue(str));
+}
+
+jsi::Object QJSRuntime::createObject(JSValueRef obj) const {
+  return make<jsi::Object>(makeObjectValue(obj));
+}
+
 jsi::Value QJSRuntime::createValue(JSValue value) const {
   if (JS_IsNumber(value)) {
       double number;
@@ -176,20 +293,34 @@ jsi::Value QJSRuntime::createValue(JSValue value) const {
   } else if (JS_IsUndefined(value)) {
       return jsi::Value();
   } else if (JS_IsString(value)) {
-      size_t size;
-      const char* value = JS_ToCStringLen2(ctx_, &size, value, 0);
-//      auto result = jsi::Value(jsi::String::createFromAscii(ctx_, value, size));
-      JS_FreeCString(ctx_, value);
-      return result;
-  } else if (JSValueIsObject(ctx_, value)) {
-    //JSObjectRef objRef = JSValueToObject(ctx_, value, nullptr);
-    //return jsi::Value(createObject(objRef));
-  } else if (smellsLikeES6Symbol(ctx_, value)) {
-    //return jsi::Value(createSymbol(value));
+      return jsi::Value(createString(&value));
+  } else if (JS_IsObject(value)) {
+    return jsi::Value(createObject(&value));
+  } else if (JS_IsSymbol(value)) {
+    return jsi::Value(createSymbol(&value));
   } else {
     // WHAT ARE YOU
     abort();
   }
+}
+
+std::shared_ptr<const jsi::PreparedJavaScript> QJSRuntime::prepareJavaScript(
+    const std::shared_ptr<const jsi::Buffer> &buffer,
+    std::string sourceURL) {
+  return std::make_shared<jsi::SourceJavaScriptPreparation>(
+      buffer, std::move(sourceURL));
+}
+
+jsi::Value QJSRuntime::evaluatePreparedJavaScript(
+const std::shared_ptr<const jsi::PreparedJavaScript>& js) {
+    assert(
+      dynamic_cast<const jsi::SourceJavaScriptPreparation*>(js.get()) &&
+      "preparedJavaScript must be a SourceJavaScriptPreparation");
+    auto sourceJs =
+        std::static_pointer_cast<const jsi::SourceJavaScriptPreparation>(js);
+    std::string tmp(
+                    reinterpret_cast<const char*>(sourceJs->data()), sourceJs->size());
+  return evaluateJavaScript(sourceJs, sourceJs->sourceURL());
 }
 
 jsi::Value QJSRuntime::evaluateJavaScript(
@@ -197,45 +328,134 @@ jsi::Value QJSRuntime::evaluateJavaScript(
     const std::string& sourceURL) {
     std::string tmp(
                     reinterpret_cast<const char*>(buffer->data()), buffer->size());
-    JSValue val;
-    int ret;
-
-    val = JS_Eval(ctx_, tmp.c_str(), tmp.size(), sourceURL.c_str(), 0);
-//    if (JS_IsException(val)) {
-//        js_std_dump_error(ctx_);
-//        ret = -1;
-//    } else {
-//        ret = 0;
-//    }
-    JS_FreeValue(ctx_, val);
-    return createValue();
-    
-//  JSStringRef sourceRef = JSStringCreateWithUTF8CString(tmp.c_str());
-//  JSStringRef sourceURLRef = nullptr;
-//  if (!sourceURL.empty()) {
-//    sourceURLRef = JSStringCreateWithUTF8CString(sourceURL.c_str());
-//  }
-//  JSValueRef exc = nullptr;
-//  JSValueRef res =
-//      JSEvaluateScript(ctx_, sourceRef, nullptr, sourceURLRef, 0, &exc);
-//  JSStringRelease(sourceRef);
-//  if (sourceURLRef) {
-//    JSStringRelease(sourceURLRef);
-//  }
-//  checkException(res, exc);
-//  return createValue(res);
+    JSValue val = JS_Eval(ctx_, tmp.c_str(), tmp.size(), sourceURL.c_str(), 0);
+    checkException(&val);
+    return createValue(val);
 }
+
+QJSRuntime::QJSSymbolValue::QJSSymbolValue(
+    JSContext *ctx,
+    const std::atomic<bool>& ctxInvalid,
+    JSValueRef sym
+#ifndef NDEBUG
+    ,
+    std::atomic<intptr_t>& counter
+#endif
+    )
+    : ctx_(ctx),
+      ctxInvalid_(ctxInvalid),
+      sym_(JS_DupValue(ctx, *sym))
+#ifndef NDEBUG
+      ,
+      counter_(counter)
+#endif
+{
+#ifndef NDEBUG
+  counter_ += 1;
+#endif
+}
+
+void QJSRuntime::QJSSymbolValue::invalidate() {
+#ifndef NDEBUG
+  counter_ -= 1;
+#endif
+
+  if (!ctxInvalid_) {
+      JS_FreeValue(ctx_, sym_);
+  }
+  delete this;
+}
+
+#ifndef NDEBUG
+QJSRuntime::QJSStringValue::QJSStringValue(
+    JSContext *ctx,
+    const std::atomic<bool>& ctxInvalid,
+    JSValueRef str,
+    std::atomic<intptr_t>& counter)
+    : ctx_(ctx), ctxInvalid_(ctxInvalid), str_(JS_DupValue(ctx_, *str)), counter_(counter) {
+  counter_ += 1;
+}
+#else
+QJSRuntime::QJSStringValue::QJSStringValue(JSContext *ctx, const std::atomic<bool>& ctxInvalid, JSValueRef str)
+    : ctx_(ctx), ctxInvalid_(ctxInvalid), str_(JS_DupValue(ctx_, *str)) {
+}
+#endif
+
+void QJSRuntime::QJSStringValue::invalidate() {
+#ifndef NDEBUG
+  counter_ -= 1;
+#endif
+    if (!ctxInvalid_) {
+        JS_FreeValue(ctx_, str_);
+    }
+    delete this;
+}
+
+QJSRuntime::QJSObjectValue::QJSObjectValue(
+    JSContext *ctx,
+    const std::atomic<bool>& ctxInvalid,
+    JSValueRef obj
+#ifndef NDEBUG
+    ,
+    std::atomic<intptr_t>& counter
+#endif
+    )
+    : ctx_(ctx),
+      ctxInvalid_(ctxInvalid),
+      obj_(JS_DupValue(ctx, *obj))
+#ifndef NDEBUG
+      ,
+      counter_(counter)
+#endif
+{
+#ifndef NDEBUG
+    counter_ += 1;
+#endif
+}
+
+void QJSRuntime::QJSObjectValue::invalidate() {
+#ifndef NDEBUG
+    counter_ -= 1;
+#endif
+    if (!ctxInvalid_) {
+        JS_FreeValue(ctx_, obj_);
+    }
+    delete this;
+}
+
+void QJSRuntime::checkException(JSValueRef exc) {
+  if (JS_IsException(*exc)) {
+      js_std_dump_error(ctx_);
+      throw jsi::JSError(*this, createValue(*exc));
+  }
+}
+
+void QJSRuntime::checkException(JSValueRef res, JSValueRef exc) {
+  if (JS_IsException(*res)) {
+      js_std_dump_error(ctx_);
+      throw jsi::JSError(*this, createValue(*exc));
+  }
+}
+
+void QJSRuntime::checkException(JSValueRef exc, const char* msg) {
+  if (JS_IsException(*exc)) {
+      js_std_dump_error(ctx_);
+      throw jsi::JSError(std::string(msg), *this, createValue(*exc));
+  }
+}
+
+void QJSRuntime::checkException(
+    JSValueRef res,
+    JSValueRef exc,
+    const char* msg) {
+  if (JS_IsException(*res)) {
+      js_std_dump_error(ctx_);
+      throw jsi::JSError(std::string(msg), *this, createValue(*exc));
+  }
+}
+
 
 std::unique_ptr<jsi::Runtime> makeJSCRuntime() {
   return std::make_unique<QJSRuntime>();
 }
-
-#if __has_builtin(__builtin_expect) || defined(__GNUC__)
-#define JSC_LIKELY(EXPR) __builtin_expect((bool)(EXPR), true)
-#define JSC_UNLIKELY(EXPR) __builtin_expect((bool)(EXPR), false)
-#else
-#define JSC_LIKELY(EXPR) (EXPR)
-#define JSC_UNLIKELY(EXPR) (EXPR)
-#endif
-
 }
