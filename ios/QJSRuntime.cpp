@@ -175,6 +175,27 @@ public:
     JSValue valueRef(const jsi::Value& value);
     
 protected:
+    class QJSAtomValue final : public PointerValue {
+    #ifndef NDEBUG
+        QJSAtomValue(JSContext *ctx,
+                     const std::atomic<bool>& ctxInvalid,
+                     JSAtom atom, std::atomic<intptr_t>& counter);
+    #else
+        QJSAtomValue(JSContext *ctx,
+                     const std::atomic<bool>& ctxInvalid,
+                     JSAtom atom);
+    #endif
+        void invalidate() override;
+        const std::atomic<bool>& ctxInvalid_;
+        JSContext *ctx_;
+        JSAtom atom_;
+    #ifndef NDEBUG
+        std::atomic<intptr_t>& counter_;
+    #endif
+       protected:
+        friend class QJSRuntime;
+      };
+    
     class QJSSymbolValue final : public PointerValue {
     #ifndef NDEBUG
         QJSSymbolValue(JSContext *ctx_,
@@ -243,18 +264,20 @@ protected:
 private:
     static JSValue symbolRef(const jsi::Symbol& str);
     static JSValue stringRef(const jsi::String& str);
-    static JSValue stringRef(const jsi::PropNameID& sym);
+    static JSAtom atomRef(const jsi::PropNameID& sym);
     static JSValue objectRef(const jsi::Object& obj);
     
     void checkException(JSValue exc);
     void checkException(JSValue res, JSValue exc);
     void checkException(JSValue exc, const char* msg);
     void checkException(JSValue res, JSValue exc, const char* msg);
+    jsi::Symbol createAtom(JSValue atom) const;
     jsi::Symbol createSymbol(JSValue symbol) const;
     jsi::String createString(JSValue str) const;
-    jsi::PropNameID createPropNameID(JSValue str);
+    jsi::PropNameID createPropNameID(JSAtom atom);
     jsi::Object createObject(JSValue object) const;
     
+    jsi::Runtime::PointerValue* makeAtomValue(JSAtom atom) const;
     jsi::Runtime::PointerValue* makeSymbolValue(JSValue sym) const;
     jsi::Runtime::PointerValue* makeStringValue(JSValue str) const;
     jsi::Runtime::PointerValue* makeObjectValue(JSValue obj) const;
@@ -323,6 +346,15 @@ jsi::Runtime::PointerValue* QJSRuntime::makeObjectValue(
 #endif
 }
 
+jsi::Runtime::PointerValue* QJSRuntime::makeAtomValue(
+    JSAtom atom) const {
+#ifndef NDEBUG
+  return new QJSAtomValue(ctx_, ctxInvalid_, atom, objectCounter_);
+#else
+  return new QJSAtomValue(ctx_, ctxInvalid_, atom);
+#endif
+}
+
 
 jsi::Symbol QJSRuntime::createSymbol(JSValue sym) const {
   return make<jsi::Symbol>(makeSymbolValue(sym));
@@ -332,8 +364,8 @@ jsi::String QJSRuntime::createString(JSValue str) const {
   return make<jsi::String>(makeStringValue(str));
 }
 
-jsi::PropNameID QJSRuntime::createPropNameID(JSValue str) {
-  return make<jsi::PropNameID>(makeStringValue(str));
+jsi::PropNameID QJSRuntime::createPropNameID(JSAtom atom) {
+  return make<jsi::PropNameID>(makeAtomValue(atom));
 }
 
 jsi::Object QJSRuntime::createObject(JSValue obj) const {
@@ -394,8 +426,8 @@ JSValue QJSRuntime::stringRef(const jsi::String& str) {
   return static_cast<const QJSStringValue*>(getPointerValue(str))->str_;
 }
 
-JSValue QJSRuntime::stringRef(const jsi::PropNameID& sym) {
-  return static_cast<const QJSStringValue*>(getPointerValue(sym))->str_;
+JSAtom QJSRuntime::atomRef(const jsi::PropNameID& prop) {
+  return static_cast<const QJSAtomValue*>(getPointerValue(prop))->atom_;
 }
 
 JSValue QJSRuntime::objectRef(const jsi::Object& obj) {
@@ -468,6 +500,37 @@ std::string QJSRuntime::description() {
 
 bool QJSRuntime::isInspectable() {
   return false;
+}
+
+QJSRuntime::QJSAtomValue::QJSAtomValue(
+    JSContext *ctx,
+    const std::atomic<bool>& ctxInvalid,
+    JSAtom atom
+#ifndef NDEBUG
+    ,
+    std::atomic<intptr_t>& counter
+#endif
+    )
+    : ctx_(ctx), ctxInvalid_(ctxInvalid),
+      atom_(JS_DupAtom(ctx, atom))
+#ifndef NDEBUG
+      ,
+      counter_(counter)
+#endif
+{
+#ifndef NDEBUG
+  counter_ += 1;
+#endif
+}
+
+void QJSRuntime::QJSAtomValue::invalidate() {
+#ifndef NDEBUG
+    counter_ -= 1;
+#endif
+    if (!ctxInvalid_) {
+        JS_FreeAtom(ctx_, atom_);
+    }
+    delete this;
 }
 
 QJSRuntime::QJSSymbolValue::QJSSymbolValue(
@@ -596,51 +659,42 @@ jsi::Runtime::PointerValue* QJSRuntime::clonePropNameID(
   if (!pv) {
     return nullptr;
   }
-  const QJSStringValue* string = static_cast<const QJSStringValue*>(pv);
-  return makeStringValue(string->str_);
+  const QJSAtomValue* atom = static_cast<const QJSAtomValue*>(pv);
+  return makeAtomValue(atom->atom_);
 }
 
 jsi::PropNameID QJSRuntime::createPropNameIDFromAscii(
     const char* str,
     size_t length) {
-    JSValue val = JS_NewStringLen(ctx_, str, length);
-    auto res = createPropNameID(val);
-    JS_FreeValue(ctx_, val);
+    JSAtom atom = JS_NewAtomLen(ctx_, str, length);
+    auto res = createPropNameID(atom);
+    JS_FreeAtom(ctx_, atom);
     return res;
 }
 
 jsi::PropNameID QJSRuntime::createPropNameIDFromUtf8(
     const uint8_t* utf8,
     size_t length) {
-  std::string tmp(reinterpret_cast<const char*>(utf8), length);
-  JSValue val = JS_NewStringLen(ctx_, (char*)utf8, length);
-  auto res = createPropNameID(val);
-  JS_FreeValue(ctx_, val);
-  return res;
+    JSAtom atom = JS_NewAtomLen(ctx_, (const char*)utf8, length);
+    auto res = createPropNameID(atom);
+    JS_FreeAtom(ctx_, atom);
+    return res;
 }
 
 jsi::PropNameID QJSRuntime::createPropNameIDFromString(const jsi::String& str) {
-  return createPropNameID(stringRef(str));
+    std::string val = str.utf8(*this);
+    JSAtom atom = JS_NewAtomLen(ctx_, (const char*)val.c_str(), val.size());
+    auto res = createPropNameID(atom);
+    JS_FreeAtom(ctx_, atom);
+    return  res;
 }
 
 std::string QJSRuntime::utf8(const jsi::PropNameID& sym) {
-    
-  return JSStringToSTLString(ctx_, stringRef(sym));
+    return std::string(JS_AtomToCString(ctx_, atomRef(sym)));
 }
 
 bool QJSRuntime::compare(const jsi::PropNameID& a, const jsi::PropNameID& b) {
-    size_t strALen, strBLen;
-    const char* strA = JS_ToCStringLen(ctx_, &strALen, stringRef(a));
-    const char* strB = JS_ToCStringLen(ctx_, &strBLen, stringRef(b));
-    int res, len;
-    len = min_int(strALen, strBLen);
-    res = memcmp(strA, strB, len);
-    JS_FreeCString(ctx_, strA);
-    JS_FreeCString(ctx_, strB);
-    if (res == 0) {
-        return strALen == strBLen;
-    }
-    return false;
+    return atomRef(a) == atomRef(b);
 }
 
 std::string QJSRuntime::symbolToString(const jsi::Symbol& sym) {
@@ -688,84 +742,70 @@ struct HostObjectProxyBase {
 
 namespace {
 std::once_flag hostObjectClassOnceFlag;
-JSClassDef* hostObjectClass{};
 static JSClassID hostObjectClassID;
 } // namespace
 
 jsi::Object QJSRuntime::createObject(std::shared_ptr<jsi::HostObject> ho) {
   struct HostObjectProxy : public detail::HostObjectProxyBase {
-    static JSValue getProperty(
-        JSContextRef ctx,
-        JSValueConst obj, JSAtom atom,
-        JSValueConst receiver) {
-      auto proxy = static_cast<HostObjectProxy*>(JS_GetOpaque(object, hostObjectClassID));
-      auto& rt = proxy->runtime;
-      jsi::PropNameID sym = rt.createPropNameID(propName);
-      jsi::Value ret;
-      try {
-        ret = proxy->hostObject->get(rt, sym);
-      } catch (const jsi::JSError& error) {
-        *exception = rt.valueRef(error.value());
-        return JS_UNDEFINED;
-      } catch (const std::exception& ex) {
-          const std::string script = "Error(\"Exception in HostObject::get(propName:" + JSStringToSTLString(ctx, propName) + "): " + ex.what() + "\")";
-          auto excValue = JS_Eval(ctx, script.c_str(), script.size(), "<evalScript>", JS_EVAL_TYPE_GLOBAL);
-          *exception = rt.valueRef(excValue);
-          return JS_UNDEFINED;
-      } catch (...) {
-          const std::string script = "Error(\"Exception in HostObject::get(propName:" + JSStringToSTLString(ctx, propName) + "):  <unknown>\")";
-          auto excValue = JS_Eval(ctx, script.c_str(), script.size(), "<evalScript>", JS_EVAL_TYPE_GLOBAL);
-          *exception = rt.valueRef(excValue);
-          return JS_UNDEFINED;
-      }
-      return rt.valueRef(ret);
+    static JSValue getProperty(JSContext *ctx, JSValueConst object, JSAtom atom,
+                               JSValueConst receiver) {
+        auto proxy = static_cast<HostObjectProxy*>(JS_GetOpaque(object, hostObjectClassID));
+        auto& rt = proxy->runtime;
+        jsi::PropNameID sym = rt.createPropNameID(atom);
+        jsi::Value ret;
+        try {
+            ret = proxy->hostObject->get(rt, sym);
+        } catch (const jsi::JSError& error) {
+            return rt.valueRef(error.value());
+        } catch (const std::exception& ex) {
+            const std::string script = "Error(\"Exception in HostObject::get(propName:" + rt.utf8(sym) + "): " + ex.what() + "\")";
+            auto excValue = JS_Eval(ctx, script.c_str(), script.size(), "<evalScript>", JS_EVAL_TYPE_GLOBAL);
+            return rt.valueRef(excValue);
+        } catch (...) {
+            const std::string script = "Error(\"Exception in HostObject::get(propName:" + rt.utf8(sym) + "):  <unknown>\")";
+            auto excValue = JS_Eval(ctx, script.c_str(), script.size(), "<evalScript>", JS_EVAL_TYPE_GLOBAL);
+            return rt.valueRef(excValue);
+        }
+        return rt.valueRef(ret);
     }
 
     #define QJS_UNUSED(x) (void) (x);
 
-    static bool setProperty(
-        JSContextRef ctx,
-        JSValue object,
-        JSValue propName,
-        JSValue value,
-        JSValue* exception) {
-      QJS_UNUSED(ctx);
-      auto proxy = static_cast<HostObjectProxy*>(JS_GetOpaque(object, hostObjectClassID));
-      auto& rt = proxy->runtime;
-      jsi::PropNameID sym = rt.createPropNameID(propName);
-      try {
-        proxy->hostObject->set(rt, sym, rt.createValue(value));
-      } catch (const jsi::JSError& error) {
-        *exception = rt.valueRef(error.value());
-        return false;
-      } catch (const std::exception& ex) {
-          const std::string script = "Error(\"Exception in HostObject::set(propName:" + JSStringToSTLString(ctx, propName) + "): " + ex.what() + "\")";
-          auto excValue = JS_Eval(ctx, script.c_str(), script.size(), "<evalScript>", JS_EVAL_TYPE_GLOBAL);
-          *exception = rt.valueRef(excValue);
-          return false;
-      } catch (...) {
-          const std::string script = "Error(\"Exception in HostObject::set(propName:" + JSStringToSTLString(ctx, propName) + "):  <unknown>\")";
-          auto excValue = JS_Eval(ctx, script.c_str(), script.size(), "<evalScript>", JS_EVAL_TYPE_GLOBAL);
-          *exception = rt.valueRef(excValue);
-          return false;
-      }
-      return true;
+    static int setProperty(JSContext *ctx, JSValueConst object, JSAtom atom,
+                           JSValueConst value, JSValueConst receiver, int flags) {
+        auto proxy = static_cast<HostObjectProxy*>(JS_GetOpaque(object, hostObjectClassID));
+        auto& rt = proxy->runtime;
+        jsi::PropNameID sym = rt.createPropNameID(atom);
+        try {
+            proxy->hostObject->set(rt, sym, rt.createValue(value));
+        } catch (...) {
+            return -1;
+        }
+        return TRUE;
     }
 
     // JSC does not provide means to communicate errors from this callback,
     // so the error handling strategy is very brutal - we'll just crash
     // due to noexcept.
-    static void getPropertyNames(
-        JSContextRef ctx,
-        JSValue object,
-        JSPropertyNameAccumulatorRef propertyNames) noexcept {
-      JSC_UNUSED(ctx);
-      auto proxy = static_cast<HostObjectProxy*>(JSObjectGetPrivate(object));
-      auto& rt = proxy->runtime;
-      auto names = proxy->hostObject->getPropertyNames(rt);
-      for (auto& name : names) {
-        JSPropertyNameAccumulatorAddName(propertyNames, stringRef(name));
-      }
+    static int getPropertyNames(JSContext *ctx, JSPropertyEnum **ptab,
+                                uint32_t *plen,
+                                JSValueConst object) {
+        auto proxy = static_cast<HostObjectProxy*>(JS_GetOpaque(object, hostObjectClassID));
+        auto& rt = proxy->runtime;
+        auto names = proxy->hostObject->getPropertyNames(rt);
+        JSPropertyEnum *tab;
+        size_t len = names.size();
+        *ptab = NULL;
+        *plen = 0;
+        if (len > 0) {
+            tab = (JSPropertyEnum *)js_malloc(ctx, sizeof(JSPropertyEnum) * len);
+            if (!tab)
+                return -1;
+            for(int i = 0; i < len; i++) {
+                tab[i].atom = JS_DupAtom(ctx, atomRef(names[i]));
+            }
+        }
+        return 0;
     }
 
     #undef JSC_UNUSED
@@ -783,6 +823,8 @@ jsi::Object QJSRuntime::createObject(std::shared_ptr<jsi::HostObject> ho) {
       JS_NewClassID(&hostObjectClassID);
       JSClassExoticMethods exotic = {
           .get_property = HostObjectProxy::getProperty,
+          .set_property = HostObjectProxy::setProperty,
+          .get_own_property_names = HostObjectProxy::getPropertyNames,
       };
       JSClassDef hostObjectClassDef = {
           "HostObject",
@@ -798,6 +840,123 @@ jsi::Object QJSRuntime::createObject(std::shared_ptr<jsi::HostObject> ho) {
     JS_FreeValue(ctx_, obj);
     return res;
 }
+
+std::shared_ptr<jsi::HostObject> QJSRuntime::getHostObject(
+    const jsi::Object& obj) {
+  // We are guaranteed at this point to have isHostObject(obj) == true
+  // so the private data should be HostObjectMetadata
+  JSValue object = objectRef(obj);
+  auto metadata =
+      static_cast<detail::HostObjectProxyBase*>(JS_GetOpaque(object, hostObjectClassID));
+  assert(metadata);
+  return metadata->hostObject;
+}
+
+jsi::Value QJSRuntime::getProperty(
+    const jsi::Object& obj,
+    const jsi::String& name) {
+    JSValue val = JS_GetPropertyStr(ctx_, objectRef(obj), name.utf8(*this).c_str());
+    checkException(val);
+    auto res = createValue(val);
+    JS_FreeValue(ctx_, val);
+    return res;
+}
+
+jsi::Value QJSRuntime::getProperty(
+    const jsi::Object& obj,
+    const jsi::PropNameID& name) {
+    JSValue val = JS_GetProperty(ctx_, objectRef(obj), atomRef(name));
+    checkException(val);
+    auto res = createValue(val);
+    JS_FreeValue(ctx_, val);
+    return res;
+}
+
+bool QJSRuntime::hasProperty(const jsi::Object& obj, const jsi::String& name) {
+    JSAtom atom = JS_NewAtom(ctx_, name.utf8(*this).c_str());
+    auto res = JS_HasProperty(ctx_, objectRef(obj), atom) == TRUE;
+    JS_FreeAtom(ctx_, atom);
+    return res;
+}
+
+bool QJSRuntime::hasProperty(
+    const jsi::Object& obj,
+    const jsi::PropNameID& name) {
+    return JS_HasProperty(ctx_, objectRef(obj), atomRef(name)) == TRUE;
+}
+
+void QJSRuntime::setPropertyValue(
+    jsi::Object& object,
+    const jsi::PropNameID& name,
+    const jsi::Value& value) {
+    int res = JS_SetProperty(ctx_, objectRef(object), atomRef(name), valueRef(value));
+    if (res == -1) {
+        JSValue exception = JS_GetException(ctx_);
+        checkException(exception);
+    }
+}
+
+void QJSRuntime::setPropertyValue(
+    jsi::Object& object,
+    const jsi::String& name,
+    const jsi::Value& value) {
+    JSAtom atom = JS_NewAtom(ctx_, name.utf8(*this).c_str());
+    int res = JS_SetProperty(ctx_, objectRef(object), atom, valueRef(value));
+    JS_FreeAtom(ctx_, atom);
+    if (res == -1) {
+        JSValue exception = JS_GetException(ctx_);
+        checkException(exception);
+    }
+}
+
+bool QJSRuntime::isArray(const jsi::Object& obj) const {
+    return JS_IsArray(ctx_, objectRef(obj)) == TRUE;
+}
+
+bool QJSRuntime::isArrayBuffer(const jsi::Object& /*obj*/) const {
+  // TODO: T23270523 - This would fail on builds that use our custom JSC
+  // auto typedArrayType = JSValueGetTypedArrayType(ctx_, objectRef(obj),
+  // nullptr);  return typedArrayType == kJSTypedArrayTypeArrayBuffer;
+  throw std::runtime_error("Unsupported");
+}
+
+uint8_t* QJSRuntime::data(const jsi::ArrayBuffer& /*obj*/) {
+  // TODO: T23270523 - This would fail on builds that use our custom JSC
+  // return static_cast<uint8_t*>(
+  //    JSObjectGetArrayBufferBytesPtr(ctx_, objectRef(obj), nullptr));
+  throw std::runtime_error("Unsupported");
+}
+
+size_t QJSRuntime::size(const jsi::ArrayBuffer& /*obj*/) {
+  // TODO: T23270523 - This would fail on builds that use our custom JSC
+  // return JSObjectGetArrayBufferByteLength(ctx_, objectRef(obj), nullptr);
+  throw std::runtime_error("Unsupported");
+}
+
+bool QJSRuntime::isFunction(const jsi::Object& obj) const {
+  return JS_IsFunction(ctx_, objectRef(obj));
+}
+
+bool QJSRuntime::isHostObject(const jsi::Object& obj) const {
+  auto cls = JS_GetClassProto(ctx_, hostObjectClassID);
+  return JS_IsInstanceOf(ctx_, cls, objectRef(obj)) == TRUE;
+}
+
+// Very expensive
+jsi::Array QJSRuntime::getPropertyNames(const jsi::Object& obj) {
+  JSPropertyNameArrayRef names =
+      JSObjectCopyPropertyNames(ctx_, objectRef(obj));
+  size_t len = JSPropertyNameArrayGetCount(names);
+  // Would be better if we could create an array with explicit elements
+  auto result = createArray(len);
+  for (size_t i = 0; i < len; i++) {
+    JSStringRef str = JSPropertyNameArrayGetNameAtIndex(names, i);
+    result.setValueAtIndex(*this, i, createString(str));
+  }
+  JSPropertyNameArrayRelease(names);
+  return result;
+}
+
 
 void QJSRuntime::checkException(JSValue exc) {
   if (JS_IsException(exc)) {
@@ -829,7 +988,6 @@ void QJSRuntime::checkException(
       throw jsi::JSError(std::string(msg), *this, createValue(exc));
   }
 }
-
 
 std::unique_ptr<jsi::Runtime> makeJSCRuntime() {
   return std::make_unique<QJSRuntime>();
