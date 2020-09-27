@@ -267,11 +267,10 @@ private:
     static JSAtom atomRef(const jsi::PropNameID& sym);
     static JSValue objectRef(const jsi::Object& obj);
     
-    void checkException(JSValue exc);
-    void checkException(JSValue res, JSValue exc);
-    void checkException(JSValue exc, const char* msg);
-    void checkException(JSValue res, JSValue exc, const char* msg);
-    jsi::Symbol createAtom(JSValue atom) const;
+    #ifdef RN_FABRIC_ENABLED
+      static JSValue objectRef(const jsi::WeakObject& obj);
+    #endif
+
     jsi::Symbol createSymbol(JSValue symbol) const;
     jsi::String createString(JSValue str) const;
     jsi::PropNameID createPropNameID(JSAtom atom);
@@ -281,6 +280,12 @@ private:
     jsi::Runtime::PointerValue* makeSymbolValue(JSValue sym) const;
     jsi::Runtime::PointerValue* makeStringValue(JSValue str) const;
     jsi::Runtime::PointerValue* makeObjectValue(JSValue obj) const;
+    
+    void checkException(JSValue exc);
+    void checkException(JSValue res, JSValue exc);
+    void checkException(JSValue exc, const char* msg);
+    void checkException(JSValue res, JSValue exc, const char* msg);
+       
     
     JSContext *ctx_;
     std::atomic<bool> ctxInvalid_;
@@ -434,6 +439,12 @@ JSValue QJSRuntime::objectRef(const jsi::Object& obj) {
   return static_cast<const QJSObjectValue*>(getPointerValue(obj))->obj_;
 }
 
+#ifdef RN_FABRIC_ENABLED
+JSValue QJSRuntime::objectRef(const jsi::WeakObject& obj) {
+  // TODO: revisit this implementation
+  return static_cast<const QJSObjectValue*>(getPointerValue(obj))->obj_;
+}
+#endif
 
 std::shared_ptr<const jsi::PreparedJavaScript> QJSRuntime::prepareJavaScript(
     const std::shared_ptr<const jsi::Buffer> &buffer,
@@ -802,8 +813,10 @@ jsi::Object QJSRuntime::createObject(std::shared_ptr<jsi::HostObject> ho) {
             if (!tab)
                 return -1;
             for(int i = 0; i < len; i++) {
+                tab[i].is_enumerable = TRUE;
                 tab[i].atom = JS_DupAtom(ctx, atomRef(names[i]));
             }
+            *plen = (uint32_t)len;
         }
         return 0;
     }
@@ -944,19 +957,76 @@ bool QJSRuntime::isHostObject(const jsi::Object& obj) const {
 
 // Very expensive
 jsi::Array QJSRuntime::getPropertyNames(const jsi::Object& obj) {
-  JSPropertyNameArrayRef names =
-      JSObjectCopyPropertyNames(ctx_, objectRef(obj));
-  size_t len = JSPropertyNameArrayGetCount(names);
-  // Would be better if we could create an array with explicit elements
-  auto result = createArray(len);
-  for (size_t i = 0; i < len; i++) {
-    JSStringRef str = JSPropertyNameArrayGetNameAtIndex(names, i);
-    result.setValueAtIndex(*this, i, createString(str));
-  }
-  JSPropertyNameArrayRelease(names);
-  return result;
+    JSPropertyEnum *tab;
+    uint32_t len = 0;
+    if (JS_GetOwnPropertyNames(ctx_, &tab, &len, objectRef(obj), JS_PROP_ENUMERABLE) == TRUE) {
+        auto result = createArray(len);
+        for (size_t i = 0; i < len; i++) {
+            result.setValueAtIndex(*this, i, createPropNameID(tab[i].atom));
+            JS_FreeAtom(ctx_, tab[i].atom);
+        }
+        js_free(ctx_, tab);
+        return result;
+    }
+    return createArray(0);
 }
 
+jsi::WeakObject QJSRuntime::createWeakObject(const jsi::Object& obj) {
+#ifdef RN_FABRIC_ENABLED
+  // TODO: revisit this implementation
+  JSValue objRef = objectRef(obj);
+  return make<jsi::WeakObject>(makeObjectValue(objRef));
+#else
+  throw std::logic_error("Not implemented");
+#endif
+}
+
+jsi::Value QJSRuntime::lockWeakObject(const jsi::WeakObject& obj) {
+#ifdef RN_FABRIC_ENABLED
+  // TODO: revisit this implementation
+  JSValue objRef = objectRef(obj);
+  return jsi::Value(createObject(objRef));
+#else
+  throw std::logic_error("Not implemented");
+#endif
+}
+
+jsi::Array QJSRuntime::createArray(size_t length) {
+    JSValue array = JS_NewArray(ctx_);
+    if (JS_SetPropertyStr(ctx_, array, "length", JS_NewInt64(ctx_, length)) == -1) {
+        JSValue exception = JS_GetException(ctx_);
+        checkException(array, exception);
+    }
+    return createObject(array).getArray(*this);
+}
+
+size_t QJSRuntime::size(const jsi::Array& arr) {
+    const std::string prop("length");
+  return static_cast<size_t>(
+                             getProperty(arr, createPropNameIDFromAscii(prop.c_str(), prop.size())).getNumber());
+}
+
+jsi::Value QJSRuntime::getValueAtIndex(const jsi::Array& arr, size_t i) {
+    if ((uint64_t)i <= (1U << 31 - 1)) {
+        
+    } else {
+        
+    }
+    JSValue val = JS_GetPropertyUint32(ctx_, objectRef(arr), (uint32_t)i);
+    checkException(val);
+    auto res = createValue(val);
+    JS_FreeValue(ctx_, val);
+    return res;
+}
+
+void QJSRuntime::setValueAtIndexImpl(
+    jsi::Array& arr,
+    size_t i,
+    const jsi::Value& value) {
+  JSValueRef exc = nullptr;
+  JSObjectSetPropertyAtIndex(ctx_, objectRef(arr), (int)i, valueRef(value), &exc);
+  checkException(exc);
+}
 
 void QJSRuntime::checkException(JSValue exc) {
   if (JS_IsException(exc)) {
