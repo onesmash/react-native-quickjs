@@ -306,6 +306,7 @@ QJSRuntime::QJSRuntime(JSContext *ctx)
       stringCounter_(0)
 #endif
 {
+    JS_SetContextOpaque(ctx_, this);
 }
 
 QJSRuntime::~QJSRuntime() {
@@ -944,19 +945,166 @@ bool QJSRuntime::isHostObject(const jsi::Object& obj) const {
 
 // Very expensive
 jsi::Array QJSRuntime::getPropertyNames(const jsi::Object& obj) {
-  JSPropertyNameArrayRef names =
-      JSObjectCopyPropertyNames(ctx_, objectRef(obj));
-  size_t len = JSPropertyNameArrayGetCount(names);
-  // Would be better if we could create an array with explicit elements
-  auto result = createArray(len);
-  for (size_t i = 0; i < len; i++) {
-    JSStringRef str = JSPropertyNameArrayGetNameAtIndex(names, i);
-    result.setValueAtIndex(*this, i, createString(str));
-  }
-  JSPropertyNameArrayRelease(names);
-  return result;
+    uint32_t len;
+    JSPropertyEnum *tab;
+    JS_GetOwnPropertyNames(ctx_, &tab, &len, objectRef(obj),
+                           JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY);
+    auto result = createArray(len);
+    for (size_t i = 0; i < len; i++) {
+        JSValue name = JS_AtomToString(ctx_, tab[i].atom);
+        result.setValueAtIndex(*this, i, createString(name));
+        JS_FreeValue(ctx_, name);
+    }
+    js_free(ctx_, tab);
+    return result;
 }
 
+jsi::WeakObject QJSRuntime::createWeakObject(const jsi::Object& obj) {
+#ifdef RN_FABRIC_ENABLED
+  // TODO: revisit this implementation
+  return make<jsi::WeakObject>(makeObjectValue(objectRef(obj)));
+#else
+  throw std::logic_error("Not implemented");
+#endif
+}
+
+jsi::Value QJSRuntime::lockWeakObject(const jsi::WeakObject& obj) {
+#ifdef RN_FABRIC_ENABLED
+  // TODO: revisit this implementation
+  return jsi::Value(createObject(objectRef(obj)));
+#else
+  throw std::logic_error("Not implemented");
+#endif
+}
+
+jsi::Array QJSRuntime::createArray(size_t length) {
+    JSValue obj = JS_NewArray(ctx_);
+    checkException(obj);
+    JSValue len = JS_NewInt64(ctx_, length);
+    JS_SetPropertyStr(ctx_, obj, "length", len);
+    JS_FreeValue(ctx_, len);
+    auto res = createObject(obj).getArray(*this);
+    JS_FreeValue(ctx_, obj);
+    return res;
+}
+
+size_t QJSRuntime::size(const jsi::Array& arr) {
+    JSAtom len = JS_NewAtom(ctx_, "length");
+    auto res = static_cast<size_t>(
+      getProperty(arr, createPropNameID(len)).getNumber());
+    JS_FreeAtom(ctx_, len);
+    return res;
+}
+
+jsi::Value QJSRuntime::getValueAtIndex(const jsi::Array& arr, size_t i) {
+    JSValue val = JS_GetPropertyUint32(ctx_, objectRef(arr), (uint32_t)i);
+    checkException(val);
+    auto res = createValue(val);
+    JS_FreeValue(ctx_, val);
+    return res;
+}
+
+void QJSRuntime::setValueAtIndexImpl(
+    jsi::Array& arr,
+    size_t i,
+    const jsi::Value& value) {
+    if (JS_SetPropertyUint32(ctx_, objectRef(arr), (unsigned)i, valueRef(value)) < 0) {
+        checkException(JS_EXCEPTION);
+    }
+}
+
+namespace {
+std::once_flag hostFunctionClassOnceFlag;
+JSClassID hostFunctionClassID;
+
+class HostFunctionProxy {
+ public:
+  HostFunctionProxy(jsi::HostFunctionType hostFunction)
+      : hostFunction_(hostFunction) {}
+
+  jsi::HostFunctionType& getHostFunction() {
+    return hostFunction_;
+  }
+
+ protected:
+  jsi::HostFunctionType hostFunction_;
+};
+} // namespace
+
+jsi::Function QJSRuntime::createFunctionFromHostFunction(
+    const jsi::PropNameID& name,
+    unsigned int paramCount,
+    jsi::HostFunctionType func) {
+  class HostFunctionMetadata : public HostFunctionProxy {
+   public:
+    static void initialize(JSContextRef ctx, JSValue object) {
+      // We need to set up the prototype chain properly here. In theory we
+      // could set func.prototype.prototype = Function.prototype to get the
+      // same result. Not sure which approach is better.
+    }
+
+    static JSValue call(JSContext *ctx, JSValueConst thisObject, int argumentCount, JSValueConst *arguments) {
+        QJSRuntime& rt = *(QJSRuntime *)JS_GetContextOpaque(ctx);
+        const unsigned maxStackArgCount = 8;
+        jsi::Value stackArgs[maxStackArgCount];
+        std::unique_ptr<jsi::Value[]> heapArgs;
+        jsi::Value* args;
+        if (argumentCount > maxStackArgCount) {
+            heapArgs = std::make_unique<jsi::Value[]>(argumentCount);
+            for (size_t i = 0; i < argumentCount; i++) {
+                heapArgs[i] = rt.createValue(arguments[i]);
+            }
+            args = heapArgs.get();
+        } else {
+            for (size_t i = 0; i < argumentCount; i++) {
+                stackArgs[i] = rt.createValue(arguments[i]);
+            }
+            args = stackArgs;
+        }
+        JSValue res;
+        jsi::Value thisVal(rt.createObject(thisObject));
+        try {
+            res = rt.valueRef(metadata->hostFunction_(rt, thisVal, args, argumentCount));
+//      } catch (const jsi::JSError& error) {
+//        *exception = rt.valueRef(error.value());
+//        res = JSValueMakeUndefined(ctx);
+//      } catch (const std::exception& ex) {
+//        std::string exceptionString("Exception in HostFunction: ");
+//        exceptionString += ex.what();
+//        *exception = makeError(rt, exceptionString);
+//        res = JSValueMakeUndefined(ctx);
+//      } catch (...) {
+//        std::string exceptionString("Exception in HostFunction: <unknown>");
+//        *exception = makeError(rt, exceptionString);
+//        res = JSValueMakeUndefined(ctx);
+//      }
+//      return res;
+    }
+
+    HostFunctionMetadata(
+        QJSRuntime* rt,
+        jsi::HostFunctionType hf,
+        unsigned ac,
+        const std::string& n)
+        : HostFunctionProxy(hf),
+          runtime(rt),
+          argCount(ac),
+          name(n) {}
+
+    QJSRuntime* runtime;
+    unsigned argCount;
+    std::string name;
+  };
+    
+//    JSValue data = JS_NewObjectClass(ctx_, hostFunctionClassID);
+//    JS_SetOpaque(data, new HostFunctionMetadata(this, func, paramCount, utf8(name)));
+    JSValue funcObj = JS_NewCFunction(ctx_, HostFunctionMetadata::call, utf8(name).c_str(), paramCount);
+    JS_SetOpaque(funcObj, new HostFunctionMetadata(this, func, paramCount, utf8(name)));
+    auto res = createObject(funcObj).getFunction(*this);
+    JS_FreeValue(ctx_, funcObj);
+    return res;
+    
+}
 
 void QJSRuntime::checkException(JSValue exc) {
   if (JS_IsException(exc)) {
