@@ -267,11 +267,10 @@ private:
     static JSAtom atomRef(const jsi::PropNameID& sym);
     static JSValue objectRef(const jsi::Object& obj);
     
-    void checkException(JSValue exc);
-    void checkException(JSValue res, JSValue exc);
-    void checkException(JSValue exc, const char* msg);
-    void checkException(JSValue res, JSValue exc, const char* msg);
-    jsi::Symbol createAtom(JSValue atom) const;
+    #ifdef RN_FABRIC_ENABLED
+      static JSValue objectRef(const jsi::WeakObject& obj);
+    #endif
+
     jsi::Symbol createSymbol(JSValue symbol) const;
     jsi::String createString(JSValue str) const;
     jsi::PropNameID createPropNameID(JSAtom atom);
@@ -281,6 +280,12 @@ private:
     jsi::Runtime::PointerValue* makeSymbolValue(JSValue sym) const;
     jsi::Runtime::PointerValue* makeStringValue(JSValue str) const;
     jsi::Runtime::PointerValue* makeObjectValue(JSValue obj) const;
+    
+    void checkException(JSValue exc);
+    void checkException(JSValue res, JSValue exc);
+    void checkException(JSValue exc, const char* msg);
+    void checkException(JSValue res, JSValue exc, const char* msg);
+       
     
     JSContext *ctx_;
     std::atomic<bool> ctxInvalid_;
@@ -435,6 +440,12 @@ JSValue QJSRuntime::objectRef(const jsi::Object& obj) {
   return static_cast<const QJSObjectValue*>(getPointerValue(obj))->obj_;
 }
 
+#ifdef RN_FABRIC_ENABLED
+JSValue QJSRuntime::objectRef(const jsi::WeakObject& obj) {
+  // TODO: revisit this implementation
+  return static_cast<const QJSObjectValue*>(getPointerValue(obj))->obj_;
+}
+#endif
 
 std::shared_ptr<const jsi::PreparedJavaScript> QJSRuntime::prepareJavaScript(
     const std::shared_ptr<const jsi::Buffer> &buffer,
@@ -803,8 +814,10 @@ jsi::Object QJSRuntime::createObject(std::shared_ptr<jsi::HostObject> ho) {
             if (!tab)
                 return -1;
             for(int i = 0; i < len; i++) {
+                tab[i].is_enumerable = TRUE;
                 tab[i].atom = JS_DupAtom(ctx, atomRef(names[i]));
             }
+            *plen = (uint32_t)len;
         }
         return 0;
     }
@@ -1098,12 +1111,15 @@ jsi::Function QJSRuntime::createFunctionFromHostFunction(
     
 //    JSValue data = JS_NewObjectClass(ctx_, hostFunctionClassID);
 //    JS_SetOpaque(data, new HostFunctionMetadata(this, func, paramCount, utf8(name)));
-    JSValue funcObj = JS_NewCFunction(ctx_, HostFunctionMetadata::call, utf8(name).c_str(), paramCount);
-    JS_SetOpaque(funcObj, new HostFunctionMetadata(this, func, paramCount, utf8(name)));
-    auto res = createObject(funcObj).getFunction(*this);
-    JS_FreeValue(ctx_, funcObj);
-    return res;
+  //   JSValue funcObj = JS_NewCFunction(ctx_, HostFunctionMetadata::call, utf8(name).c_str(), paramCount);
+  //   JS_SetOpaque(funcObj, new HostFunctionMetadata(this, func, paramCount, utf8(name)));
+  //   auto res = createObject(funcObj).getFunction(*this);
+  //   JS_FreeValue(ctx_, funcObj);
+  //   return res;
     
+  // JSValueRef exc = nullptr;
+  // JSObjectSetPropertyAtIndex(ctx_, objectRef(arr), (int)i, valueRef(value), &exc);
+  // checkException(exc);
 }
 
 void QJSRuntime::checkException(JSValue exc) {
