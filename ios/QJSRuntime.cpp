@@ -846,6 +846,8 @@ jsi::Object QJSRuntime::createObject(std::shared_ptr<jsi::HostObject> ho) {
           .exotic = &exotic,
       };
       JS_NewClass(JS_GetRuntime(ctx_), hostObjectClassID, &hostObjectClassDef);
+      JSValue proto = JS_NewObject(ctx_);
+      JS_SetClassProto(ctx_, hostObjectClassID, proto);
   });
 
     JSValue obj = JS_NewObjectClass(ctx_, hostObjectClassID);
@@ -1056,7 +1058,9 @@ jsi::Function QJSRuntime::createFunctionFromHostFunction(
       // same result. Not sure which approach is better.
     }
 
-    static JSValue call(JSContext *ctx, JSValueConst thisObject, int argumentCount, JSValueConst *arguments) {
+    static JSValue call(JSContext *ctx, JSValueConst funcObj, JSValueConst thisObject, int argumentCount, JSValueConst *arguments, int flags) {
+        HostFunctionMetadata* metadata =
+            static_cast<HostFunctionMetadata*>(JS_GetOpaque(funcObj, hostFunctionClassID));
         QJSRuntime& rt = *(QJSRuntime *)JS_GetContextOpaque(ctx);
         const unsigned maxStackArgCount = 8;
         jsi::Value stackArgs[maxStackArgCount];
@@ -1078,21 +1082,22 @@ jsi::Function QJSRuntime::createFunctionFromHostFunction(
         jsi::Value thisVal(rt.createObject(thisObject));
         try {
             res = rt.valueRef(metadata->hostFunction_(rt, thisVal, args, argumentCount));
-//      } catch (const jsi::JSError& error) {
-//        *exception = rt.valueRef(error.value());
-//        res = JSValueMakeUndefined(ctx);
-//      } catch (const std::exception& ex) {
-//        std::string exceptionString("Exception in HostFunction: ");
-//        exceptionString += ex.what();
-//        *exception = makeError(rt, exceptionString);
-//        res = JSValueMakeUndefined(ctx);
-//      } catch (...) {
-//        std::string exceptionString("Exception in HostFunction: <unknown>");
-//        *exception = makeError(rt, exceptionString);
-//        res = JSValueMakeUndefined(ctx);
-//      }
-//      return res;
+        } catch (const jsi::JSError& error) {
+            res = JS_UNDEFINED;
+        } catch (const std::exception& ex) {
+            res = JS_UNDEFINED;
+        } catch (...) {
+            res = JS_UNDEFINED;
+        }
+        return res;
     }
+      
+      static void finalize(JSRuntime *rt, JSValue val) {
+          HostFunctionMetadata* metadata =
+              static_cast<HostFunctionMetadata*>(JS_GetOpaque(val, hostFunctionClassID));
+          JS_SetOpaque(val, nullptr);
+          delete metadata;
+      }
 
     HostFunctionMetadata(
         QJSRuntime* rt,
@@ -1108,18 +1113,95 @@ jsi::Function QJSRuntime::createFunctionFromHostFunction(
     unsigned argCount;
     std::string name;
   };
+
     
-//    JSValue data = JS_NewObjectClass(ctx_, hostFunctionClassID);
-//    JS_SetOpaque(data, new HostFunctionMetadata(this, func, paramCount, utf8(name)));
-  //   JSValue funcObj = JS_NewCFunction(ctx_, HostFunctionMetadata::call, utf8(name).c_str(), paramCount);
-  //   JS_SetOpaque(funcObj, new HostFunctionMetadata(this, func, paramCount, utf8(name)));
-  //   auto res = createObject(funcObj).getFunction(*this);
-  //   JS_FreeValue(ctx_, funcObj);
-  //   return res;
-    
-  // JSValueRef exc = nullptr;
-  // JSObjectSetPropertyAtIndex(ctx_, objectRef(arr), (int)i, valueRef(value), &exc);
-  // checkException(exc);
+    std::call_once(hostFunctionClassOnceFlag, [this]() {
+        JS_NewClassID(&hostFunctionClassID);
+        JSClassDef hostFunctionObjectClassDef = {
+            "HostFunctionObject",
+            .call = HostFunctionMetadata::call,
+            .finalizer = HostFunctionMetadata::finalize,
+        };
+        JS_NewClass(JS_GetRuntime(ctx_), hostFunctionClassID, &hostFunctionObjectClassDef);
+        JSValue emptyFunc = JS_NewCFunction(ctx_, (JSCFunction *)nullptr, "", 0);
+        JS_SetClassProto(ctx_, hostFunctionClassID, JS_GetPrototype(ctx_, emptyFunc));
+    });
+    JSValue functionObj = JS_NewObjectClass(ctx_, hostFunctionClassID);
+    JS_SetOpaque(functionObj, new HostFunctionMetadata(this, func, paramCount, utf8(name)));
+    auto res = createObject(functionObj).getFunction(*this);
+    JS_FreeValue(ctx_, functionObj);
+    return res;
+}
+
+namespace detail {
+
+class ArgsConverter {
+ public:
+  ArgsConverter(QJSRuntime& rt, const jsi::Value* args, size_t count) {
+    JSValue* destination = inline_;
+    if (count > maxStackArgs) {
+      outOfLine_ = std::make_unique<JSValue[]>(count);
+      destination = outOfLine_.get();
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+      destination[i] = rt.valueRef(args[i]);
+    }
+  }
+
+  operator JSValue*() {
+    return outOfLine_ ? outOfLine_.get() : inline_;
+  }
+
+ private:
+  constexpr static unsigned maxStackArgs = 8;
+  JSValue inline_[maxStackArgs];
+  std::unique_ptr<JSValue[]> outOfLine_;
+};
+} // namespace detail
+
+bool QJSRuntime::isHostFunction(const jsi::Function& obj) const {
+    auto cls = JS_GetClassProto(ctx_, hostFunctionClassID);
+    return JS_IsInstanceOf(ctx_, cls, objectRef(obj)) == TRUE;
+}
+
+jsi::HostFunctionType& JSCRuntime::getHostFunction(const jsi::Function& obj) {
+// We know that isHostFunction(obj) is true here, so its safe to proceed
+auto proxy =
+    static_cast<HostFunctionProxy*>(JSObjectGetPrivate(objectRef(obj)));
+return proxy->getHostFunction();
+}
+
+jsi::Value JSCRuntime::call(
+  const jsi::Function& f,
+  const jsi::Value& jsThis,
+  const jsi::Value* args,
+  size_t count) {
+JSValueRef exc = nullptr;
+auto res = JSObjectCallAsFunction(
+    ctx_,
+    objectRef(f),
+    jsThis.isUndefined() ? nullptr : objectRef(jsThis.getObject(*this)),
+    count,
+    detail::ArgsConverter(*this, args, count),
+    &exc);
+checkException(exc);
+return createValue(res);
+}
+
+jsi::Value JSCRuntime::callAsConstructor(
+  const jsi::Function& f,
+  const jsi::Value* args,
+  size_t count) {
+JSValueRef exc = nullptr;
+auto res = JSObjectCallAsConstructor(
+    ctx_,
+    objectRef(f),
+    count,
+    detail::ArgsConverter(*this, args, count),
+    &exc);
+checkException(exc);
+return createValue(res);
 }
 
 void QJSRuntime::checkException(JSValue exc) {
