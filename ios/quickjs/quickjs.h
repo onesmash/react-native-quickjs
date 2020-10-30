@@ -1033,6 +1033,9 @@ int JS_SetModuleExportList(JSContext *ctx, JSModuleDef *m,
 #undef js_unlikely
 #undef js_force_inline
 
+/* 自定义 */
+int JS_StringCompare(JSContext *ctx, JSValueConst a, JSValueConst b);
+
 #ifdef __cplusplus
 } /* extern "C" { */
 #endif

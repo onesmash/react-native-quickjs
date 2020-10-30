@@ -10,11 +10,10 @@
 
 #include <jsi/jsi.h>
 #include <memory.h>
-using namespace facebook;
 
 namespace qjs {
 
-std::unique_ptr<jsi::Runtime> makeJSCRuntime();
+std::unique_ptr<facebook::jsi::Runtime> makeQJSRuntime();
 
 }
 

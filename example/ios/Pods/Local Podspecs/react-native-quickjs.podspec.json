@@ -11,7 +11,7 @@
   "source": {
     "http": "https://github.com/onesmash/react-native-quickjs.git"
   },
-  "source_files": "ios/**/*.{h,c,cpp}",
+  "source_files": "ios/**/*.{h,c,cpp,mm}",
   "exclude_files": [
     "ios/quickjs/qjsc.c",
     "ios/quickjs/qjs.c",
@@ -21,12 +21,12 @@
     "ios/quickjs/examples/**/*",
     "ios/quickjs/tests/**/*"
   ],
+  "xcconfig": {
+    "OTHER_CFLAGS": "    $(inherited) -DCONFIG_VERSION=\"\\\"2020-09-06\\\"\"\n"
+  },
   "dependencies": {
-    "React-jsi": [
+    "React": [
 
     ]
-  },
-  "xcconfig": {
-    "OTHER_CFLAGS": "    $(inherited) -DCONFIG_VERSION=\"\\\"2020-07-05\\\"\"\n"
   }
 }

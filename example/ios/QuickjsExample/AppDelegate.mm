@@ -10,6 +10,12 @@
 #import <React/RCTBridge.h>
 #import <React/RCTBundleURLProvider.h>
 #import <React/RCTRootView.h>
+#import <React/RCTCxxBridgeDelegate.h>
+#import <QJSExecutorFactory.h>
+
+@interface AppDelegate () <RCTCxxBridgeDelegate>
+
+@end
 
 @implementation AppDelegate
 
@@ -41,6 +47,6 @@
 
 - (std::unique_ptr<facebook::react::JSExecutorFactory>)jsExecutorFactoryForBridge:(RCTBridge *)bridge
 {
-  
+  return std::make_shared<qjs::QJSExecutorFactory>(nullptr);
 }
 @end

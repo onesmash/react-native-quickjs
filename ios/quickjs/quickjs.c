@@ -53573,3 +53573,8 @@ void JS_AddIntrinsicTypedArrays(JSContext *ctx)
     JS_AddIntrinsicAtomics(ctx);
 #endif
 }
+
+int JS_StringCompare(JSContext *ctx, JSValueConst a, JSValueConst b)
+{
+    return js_string_compare(ctx, JS_VALUE_GET_STRING(a), JS_VALUE_GET_STRING(b));
+}

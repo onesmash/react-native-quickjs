@@ -14,11 +14,13 @@ Pod::Spec.new do |s|
 
   s.platforms    = { :ios => "9.0" }
   s.source       = { :http => "https://github.com/onesmash/react-native-quickjs.git" }
-  s.source_files = "ios/**/*.{h,c,cpp}"
+  s.source_files = "ios/**/*.{h,c,cpp,mm}"
   s.exclude_files = "ios/quickjs/qjsc.c", "ios/quickjs/qjs.c", "ios/quickjs/run-test262.c", "ios/quickjs-2020-07-05/unicode_gen.c", "ios/quickjs/doc/**/*", "ios/quickjs/examples/**/*", "ios/quickjs/tests/**/*"
   s.xcconfig = { "OTHER_CFLAGS" => <<-DESC
     $(inherited) -DCONFIG_VERSION="\\"#{version}\\""
     DESC
     }
+  s.dependency 'React'
+  #s.dependency 'React-Core'
 
 end

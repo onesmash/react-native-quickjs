@@ -1,5 +1,5 @@
 //
-//  QJSExecutorFactory.cpp
+//  QJSExecutorFactory.mm
 //  react-native-quickjs
 //
 //  Created by 徐晖 on 2020/10/29.
@@ -7,6 +7,7 @@
 
 #include "QJSExecutorFactory.h"
 #include "QJSRuntime.h"
+#include <memory>
 
 using namespace facebook;
 using namespace react;
