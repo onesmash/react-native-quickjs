@@ -1201,21 +1201,21 @@ JSValue QJSRuntime::objectRef(const jsi::WeakObject& obj) {
 void QJSRuntime::checkException(JSValue exc) {
   if (JS_IsException(exc)) {
       js_std_dump_error(ctx_);
-      throw jsi::JSError(*this, createValue(exc));
+      throw jsi::JSError(*this, "Exception");
   }
 }
 
 void QJSRuntime::checkException(JSValue res, JSValue exc) {
   if (JS_IsException(res)) {
       js_std_dump_error(ctx_);
-      throw jsi::JSError(*this, createValue(exc));
+      throw jsi::JSError(*this, "Exception");
   }
 }
 
 void QJSRuntime::checkException(JSValue exc, const char* msg) {
   if (JS_IsException(exc)) {
       js_std_dump_error(ctx_);
-      throw jsi::JSError(std::string(msg), *this, createValue(exc));
+      throw jsi::JSError(*this, msg);
   }
 }
 
@@ -1225,7 +1225,7 @@ void QJSRuntime::checkException(
     const char* msg) {
   if (JS_IsException(res)) {
       js_std_dump_error(ctx_);
-      throw jsi::JSError(std::string(msg), *this, createValue(exc));
+      throw jsi::JSError(*this, msg);
   }
 }
 

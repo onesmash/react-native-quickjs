@@ -47,6 +47,6 @@
 
 - (std::unique_ptr<facebook::react::JSExecutorFactory>)jsExecutorFactoryForBridge:(RCTBridge *)bridge
 {
-  return std::make_shared<qjs::QJSExecutorFactory>(nullptr);
+  return std::make_unique<qjs::QJSExecutorFactory>(nullptr);
 }
 @end

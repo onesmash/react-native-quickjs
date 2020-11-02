@@ -7,6 +7,7 @@
 
 #include "QJSExecutorFactory.h"
 #include "QJSRuntime.h"
+#import <React/RCTLog.h>
 #include <memory>
 
 using namespace facebook;
